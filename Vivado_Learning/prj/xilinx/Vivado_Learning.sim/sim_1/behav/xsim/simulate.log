@@ -1,0 +1,18 @@
+Time resolution is 1 ps
+10000 ns  SW=0000  LED0=0
+20000 ns  SW=0001  LED0=0
+30000 ns  SW=0010  LED0=0
+40000 ns  SW=0011  LED0=0
+50000 ns  SW=0100  LED0=0
+60000 ns  SW=0101  LED0=0
+70000 ns  SW=0110  LED0=0
+80000 ns  SW=0111  LED0=0
+90000 ns  SW=1000  LED0=1
+100000 ns  SW=1001  LED0=1
+110000 ns  SW=1010  LED0=0
+120000 ns  SW=1011  LED0=0
+130000 ns  SW=1100  LED0=0
+140000 ns  SW=1101  LED0=0
+150000 ns  SW=1110  LED0=0
+160000 ns  SW=1111  LED0=0
+$stop called at time : 160 ns : File "d:/Vivado/Vivado_Learning/user/sim/new/tb_course_1.v" Line 46

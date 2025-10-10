@@ -1,0 +1,10 @@
+{
+    "toolChain": "xilinx",
+    "prjName": {
+        "PL": "Vivado_Learning"
+    },
+    "soc": {
+        "core": "none"
+    },
+    "device": "xc7a100tcsg324-1"
+}
