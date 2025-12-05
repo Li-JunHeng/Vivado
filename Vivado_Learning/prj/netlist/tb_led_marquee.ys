@@ -1,0 +1,4 @@
+read_verilog -sv -formal -overwrite {workspace}/user/src/new/led_marquee.v
+read_verilog -sv -formal -overwrite {workspace}/user/sim/new/tb_led_marquee.v
+design -reset-vlog; proc;
+write_json {workspace}/prj/netlist/tb_led_marquee.json
