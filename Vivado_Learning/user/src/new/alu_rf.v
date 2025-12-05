@@ -7,10 +7,10 @@
 //
 // SW 开关定义 (任务二):
 //   SW[15]     : 时钟速度控制 (1: 慢速 ~0.74Hz, 0: 快速 ~3Hz)
-//   SW[14]     : (保留，暂未使用)
+//   SW[14]     : ROM 显示模式 (1: 显示 ROM 指令内容)
 //   SW[13]     : RF 自动轮询模式 (1: 自动循环显示所有寄存器)
 //   SW[12]     : ALU 循环显示模式 (1: 循环显示 A, B, C, Zero, FFFFFFFF)
-//   SW[11]     : 写数据源选择 (1: 写入ALU结果, 0: 写入SW[7:5]扩展值)
+//   SW[11]     : (保留，当前未使用)
 //   SW[10:8]   : 寄存器地址 (复用)
 //                - SW[2]=0 时: A1 (读地址1)
 //                - SW[2]=1 时: A3 (写地址)
@@ -77,18 +77,36 @@ module ALU_RF (
     // A3 (写地址): 手动写入时用 SW[10:8]
     assign rf_A3 = {2'b00, sw_i[10:8]};
 
-    // WD (写数据): 由 SW[11] 选择写入源
-    // - 如果 SW[11]=1: 写入 ALU 运算结果
-    // - 如果 SW[11]=0: 写入开关数据 SW[7:5] (扩展为32位)
-    wire [31:0] alu_result;
-    assign rf_WD = (sw_i[11]) ? alu_result : {29'd0, sw_i[7:5]};
+    // WD (写数据): 仅来自开关 SW[7:5]，扩展为32位
+    assign rf_WD = {29'd0, sw_i[7:5]};
 
     // RFWr (写使能): 由 SW[2] 控制
     assign rf_RFWr = sw_i[2];
 
 
     //================================================================
-    // 3. 实例化 RF 模块
+    // 3. ROM 指令显示逻辑 (SW[14]=1 显示)
+    //================================================================
+    reg [5:0] rom_addr;      // ROM 地址计数器
+    wire [31:0] instr;       // ROM 输出指令
+
+    // ROM 地址累加：仅在选择显示ROM时递增
+    always @(posedge Clk_CPU or negedge rstn) begin
+        if (!rstn)
+            rom_addr <= 6'd0;
+        else if (sw_i[14])
+            rom_addr <= rom_addr + 1'b1;
+    end
+
+    // 例化 ROM IP
+    dist_mem_im U_IM (
+        .a(rom_addr),
+        .spo(instr)
+    );
+
+
+    //================================================================
+    // 4. 实例化 RF 模块
     //================================================================
     RF U_RF (
         .clk(clk),
@@ -105,7 +123,7 @@ module ALU_RF (
 
 
     //================================================================
-    // 4. ALU 信号定义与实例化
+    // 5. ALU 信号定义与实例化
     //================================================================
     wire [31:0] alu_A, alu_B;
     wire [2:0]  alu_op;
@@ -128,15 +146,11 @@ module ALU_RF (
         .Zero(alu_Zero)
     );
 
-    // ALU 结果连接到 RF 写数据选择
-    assign alu_result = alu_C;
-
-
     //================================================================
-    // 5. 循环显示逻辑 (当 SW[12]=1 时)
+    // 6. 循环显示逻辑 (当 SW[12]=1 时)
     //================================================================
     // 需要5个状态: 0=A, 1=B, 2=C, 3=Zero, 4=FFFFFFFF
-    reg [2:0] disp_sel;  // 显示选择: 使用3位以支持5个状态
+    reg [2:0] disp_sel;  // 3位寄存器，兼容未来扩展
 
     always @(posedge Clk_CPU or negedge rstn) begin
         if (!rstn)
@@ -147,34 +161,42 @@ module ALU_RF (
             else
                 disp_sel <= disp_sel + 1'b1;
         end
+        else begin
+            disp_sel <= 3'b000;      // 退出循环后回到起始显示
+        end
     end
 
 
     //================================================================
-    // 6. 显示数据选择与多路复用 (Display Mux)
+    // 7. 显示数据选择与多路复用 (Display Mux)
     //================================================================
     reg [63:0] final_disp_data;
 
     always @(*) begin
-        if (sw_i[13]) begin
-            // 优先级1: RF 自动轮询显示 (SW[13]=1)
+        if (sw_i[14]) begin
+            // 优先级1: ROM 指令显示 (SW[14]=1)
+            // 低32位显示ROM内容，高32位补0
+            final_disp_data = {32'd0, instr};
+        end
+        else if (sw_i[13]) begin
+            // 优先级2: RF 自动轮询显示 (SW[13]=1)
             // 低32位显示当前寄存器值(RD1)，高32位补0
             final_disp_data = {32'd0, rf_RD1};
         end
         else if (sw_i[12]) begin
-            // 优先级2: ALU 循环显示模式 (SW[12]=1)
+            // 优先级3: ALU 循环显示模式 (SW[12]=1)
             // 循环显示: A -> B -> C -> Zero -> FFFFFFFF
             case (disp_sel)
-                3'd0: final_disp_data = {32'd0, alu_A};           // 显示 A (RD1)
-                3'd1: final_disp_data = {32'd0, alu_B};           // 显示 B (RD2)
-                3'd2: final_disp_data = {32'd0, alu_C};           // 显示 C (ALU结果)
+                3'd0: final_disp_data = {32'd0, alu_A};        // 显示 A (RD1)
+                3'd1: final_disp_data = {32'd0, alu_B};        // 显示 B (RD2)
+                3'd2: final_disp_data = {32'd0, alu_C};        // 显示 C (ALU结果)
                 3'd3: final_disp_data = {32'd0, 31'd0, alu_Zero}; // 显示 Zero 标志
-                3'd4: final_disp_data = {32'd0, 32'hFFFFFFFF};    // 显示 FFFFFFFF
+                3'd4: final_disp_data = {32'd0, 32'hFFFFFFFF}; // 显示 FFFFFFFF
                 default: final_disp_data = 64'd0;
             endcase
         end
         else begin
-            // 优先级3: 默认显示模式
+            // 优先级4: 默认显示模式
             // 高32位显示 RD2 (左侧)，低32位显示 RD1 (右侧)
             final_disp_data = {rf_RD2, rf_RD1};
         end
@@ -182,7 +204,7 @@ module ALU_RF (
 
 
     //================================================================
-    // 7. 实例化数码管显示模块
+    // 8. 实例化数码管显示模块
     //================================================================
     // 使用 seg7x16 模块以支持64位数据显示
     seg7x16 U_SEG7 (
@@ -195,4 +217,3 @@ module ALU_RF (
     );
 
 endmodule
-
