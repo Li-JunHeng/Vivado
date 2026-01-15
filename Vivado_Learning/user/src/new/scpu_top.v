@@ -1,146 +1,315 @@
 `timescale 1ns / 1ps
 
 // =============================================================
-// SCPU_TOP：单周期（或简化）CPU 顶层封装 + 板级外设连接
-// -------------------------------------------------------------
-// 你可以把它理解成“把所有模块连起来的总装配图”：
-//   PC -> 指令存储器(IM) -> 控制器(ctrl) / 立即数(EXT) / 寄存器堆(RF)
+// SCPU_TOP: 单周期 RISC-V CPU 顶层模块 (Single Cycle CPU Top)
+// =============================================================
+// 功能: 将所有子模块连接起来，形成完整的单周期 CPU 数据通路
+//
+// 数据通路概览:
+//   PC -> 指令存储器(IM) -> 控制器(ctrl) / 立即数扩展(EXT) / 寄存器堆(RF)
 //      -> ALU -> 数据存储器(DM) -> 写回 RF
 //      -> NPC 计算 next PC -> 更新 PC
 //
-// 板级输入/输出：
-// - sw_i[15]：选择 CPU 时钟快/慢（用于观察运行过程）
-// - sw_i[1] ：调试模式开关（=1 时暂停 CPU 的 PC 更新，并允许手动读寄存器）
-// - sw_i[14:12]：选择数码管显示内容
-// - led_o：这里直接把开关值映射到 LED，方便确认开关状态
-//
-// 初学者提示：
-// - 顶层主要是“连线”，不应包含复杂算法；复杂逻辑应该放在子模块里。
-// - 时序逻辑用 always @(posedge ...)；组合逻辑用 always @(*) / assign。
 // =============================================================
+// 单周期 CPU 数据通路示意图
+// =============================================================
+//
+//                    +-----+
+//         +-------->| +4  |-------+
+//         |         +-----+       |
+//         |                       v
+//     +---+---+              +---------+
+//     |  PC   |------------->|   IM    |-----> instr
+//     +-------+              +---------+
+//         ^                       |
+//         |                       v
+//     +-------+              +---------+
+//     |  NPC  |<-------------|  ctrl   |-----> 控制信号
+//     +-------+              +---------+
+//         ^                       |
+//         |    +------------------+
+//         |    |
+//         |    v
+//     +-------+    +-------+    +-------+
+//     | EXT   |--->| MUX_B |--->|       |
+//     +-------+    +-------+    |       |
+//                       ^       |  ALU  |-----> alu_result
+//     +-------+         |       |       |
+//     |  RF   |--RD2--->+       |       |
+//     |       |                 +-------+
+//     |       |--RD1--->MUX_A----->^
+//     +-------+                    |
+//         ^                    +---+---+
+//         |                    |  DM   |
+//         |                    +-------+
+//         |                        |
+//         +----<---MUX_WB----<-----+
+//
+// =============================================================
+// 板级输入/输出说明
+// =============================================================
+// - sw_i[15]   : 时钟选择 (1=慢时钟便于观察, 0=快时钟正常运行)
+// - sw_i[1]    : 调试模式 (1=暂停PC更新，允许手动读寄存器)
+// - sw_i[14:12]: 数码管显示内容选择
+// - sw_i[10:6] : 调试模式下手动选择读取的寄存器编号
+// - led_o      : LED 输出 (直接映射开关值，确认开关状态)
+// - disp_an_o  : 数码管位选信号
+// - disp_seg_o : 数码管段选信号
+// =============================================================
+
 module SCPU_TOP(
-        input clk,
-        input rstn,
-        input [15:0] sw_i,
-        input BTNC, BTNU, BTNL, BTNR, BTND,
-        output [15:0] led_o,
-        output [7:0] disp_an_o,
-        output [7:0] disp_seg_o
+    input         clk,          // 系统时钟
+    input         rstn,         // 复位信号 (低电平有效)
+    input  [15:0] sw_i,         // 开关输入
+    input         BTNC,         // 中央按钮
+    input         BTNU,         // 上按钮
+    input         BTNL,         // 左按钮
+    input         BTNR,         // 右按钮
+    input         BTND,         // 下按钮
+    output [15:0] led_o,        // LED 输出
+    output [7:0]  disp_an_o,    // 数码管位选
+    output [7:0]  disp_seg_o    // 数码管段选
+);
+
+    // =========================================================
+    // 1. 时钟分频
+    // =========================================================
+    // 用板上高速时钟产生一个"更适合观察"的 CPU 时钟
+    reg [31:0] clk_divider;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn)
+            clk_divider <= 32'd0;
+        else
+            clk_divider <= clk_divider + 32'd1;
+    end
+
+    // sw_i[15]=1: 选择更慢的分频时钟 (便于肉眼观察)
+    // sw_i[15]=0: 选择更快的分频时钟 (正常运行)
+    wire cpu_clk = sw_i[15] ? clk_divider[26] : clk_divider[2];
+
+    // =========================================================
+    // 2. PC 寄存器 (程序计数器)
+    // =========================================================
+    reg  [31:0] PC;          // 当前指令地址
+    wire [31:0] next_pc;     // 下一条指令地址
+
+    always @(posedge cpu_clk or negedge rstn) begin
+        if (!rstn)
+            PC <= 32'd0;
+        else if (sw_i[1] == 1'b0)  // 调试模式(sw_i[1]=1)下暂停 PC 更新
+            PC <= next_pc;
+    end
+
+    // =========================================================
+    // 3. 内部信号声明
+    // =========================================================
+
+    // --- 指令相关 ---
+    wire [31:0] instr;          // 取出的 32 位指令
+
+    // --- 寄存器堆输出 ---
+    wire [31:0] rs1_data;       // 寄存器 rs1 读出的数据
+    wire [31:0] rs2_data;       // 寄存器 rs2 读出的数据
+
+    // --- 立即数 ---
+    wire [31:0] imm_out;        // 扩展后的 32 位立即数
+
+    // --- ALU 相关 ---
+    wire [31:0] alu_src_a;      // ALU A 端口输入
+    wire [31:0] alu_src_b;      // ALU B 端口输入
+    wire [31:0] alu_result;     // ALU 运算结果
+    wire        alu_zero;       // ALU Zero 标志
+
+    // --- 存储器相关 ---
+    wire [31:0] mem_rd_data;    // 数据存储器读出的数据
+
+    // --- 写回数据 ---
+    wire [31:0] write_data;     // 写回寄存器堆的数据
+
+    // --- 控制信号 ---
+    wire        RegWrite;       // 寄存器写使能
+    wire        MemWrite;       // 存储器写使能
+    wire        alu_src_a_sel;  // ALU A 端口选择 (0:rs1, 1:PC)
+    wire        alu_src_b_sel;  // ALU B 端口选择 (0:rs2, 1:imm)
+    wire [4:0]  alu_op;         // ALU 操作码
+    wire [5:0]  ext_op;         // 立即数扩展类型
+    wire [2:0]  mem_type;       // 访存类型
+    wire [1:0]  wb_sel;         // 写回数据选择
+    wire [1:0]  npc_op;         // Next PC 操作类型
+
+    // =========================================================
+    // 4. 指令存储器 (Instruction Memory)
+    // =========================================================
+    // ---------------------------------------------------------
+    // PC[7:2] 取字地址说明:
+    // ---------------------------------------------------------
+    // RV32I 指令固定 4 字节 (32位)，内存按字节编址
+    // PC 是字节地址，而指令存储器按"字"组织
+    // 因此 PC/4 = PC[31:2] 即为字地址
+    // 本工程 IM 只有 64 条指令空间，故只取 PC[7:2] (6位)
+    // ---------------------------------------------------------
+    dist_mem_im U_IM (
+        .a(PC[7:2]),
+        .spo(instr)
     );
 
-    // ---------------------------------------------------------
-    // 1) 时钟分频：用板上高速 clk 产生一个“更适合观察”的 clk_cpu
-    // ---------------------------------------------------------
-    reg [31:0] clk_div;
-    always @(posedge clk or negedge rstn)
-        if (!rstn)
-            clk_div <= 0;
-        else
-            clk_div <= clk_div + 1;
+    // =========================================================
+    // 5. 控制器 (Control Unit)
+    // =========================================================
+    // 根据指令的 opcode/funct3/funct7 字段生成各类控制信号
+    ctrl U_CTRL (
+        .opcode(instr[6:0]),
+        .funct7(instr[31:25]),
+        .funct3(instr[14:12]),
+        .RegWrite(RegWrite),
+        .MemWrite(MemWrite),
+        .ext_op(ext_op),
+        .alu_op(alu_op),
+        .alu_src_a(alu_src_a_sel),
+        .alu_src_b(alu_src_b_sel),
+        .mem_type(mem_type),
+        .wb_sel(wb_sel),
+        .npc_op(npc_op)
+    );
 
-    // sw_i[15]=1：选择更慢的分频时钟（便于肉眼观察）
-    // sw_i[15]=0：选择更快的分频时钟（运行更快）
-    wire clk_cpu = sw_i[15] ? clk_div[26] : clk_div[2];
+    // =========================================================
+    // 6. 寄存器堆 (Register File)
+    // =========================================================
+    // 调试模式(sw_i[1]=1): 用开关 sw_i[10:6] 手动选择读哪个寄存器
+    // 正常模式(sw_i[1]=0): rs1_addr 取 instr[19:15]
+    wire [4:0] rf_read_addr1 = sw_i[1] ? sw_i[10:6] : instr[19:15];
 
-    // ---------------------------------------------------------
-    // 2) PC 寄存器：保存当前指令地址
-    // ---------------------------------------------------------
-    reg [31:0] PC;
-    wire [31:0] NPC_out;
-    always @(posedge clk_cpu or negedge rstn)
-        if (!rstn)
-            PC <= 0;
-        else if (sw_i[1]==0) // 调试模式(sw_i[1]=1)下暂停 PC 更新，便于观察
-            PC <= NPC_out;
-
-    // ---------------------------------------------------------
-    // 3) 子模块连线（数据通路）
-    // ---------------------------------------------------------
-    // instr：取出的 32 位指令
-    // RD1/RD2：寄存器堆读出的两个源操作数
-    // immout：扩展后的立即数
-    // alu_out：ALU 运算结果（也常作为访存地址）
-    // dm_out：数据存储器读出数据
-    // WD：写回寄存器堆的数据（Write Data）
-    wire [31:0] instr, RD1, RD2, immout, alu_out, dm_out, WD;
-    wire [31:0] alu_a, alu_b;
-    wire RegWrite, MemWrite, ALUSrcA, ALUSrcB, Zero;
-    wire [4:0] ALUOp;
-    wire [5:0] EXTOp;
-    wire [2:0] DMType;
-    wire [1:0] WDSel, NPCOp;
-
-    // 指令存储器：通常由 Vivado 的 IP（dist_mem_im）生成
-    // 注意：PC 是字节地址；RV32I 指令 4 字节对齐，所以取 PC[7:2] 作为“字地址”
-    dist_mem_im U_IM (.a(PC[7:2]), .spo(instr));
-
-    // 控制器：根据 instr 字段生成控制信号
-    ctrl U_Ctrl (
-             .Op(instr[6:0]), .Funct7(instr[31:25]), .Funct3(instr[14:12]),
-             .RegWrite(RegWrite), .MemWrite(MemWrite), .EXTOp(EXTOp),
-             .ALUOp(ALUOp), .ALUSrcA(ALUSrcA), .ALUSrcB(ALUSrcB),
-             .DMType(DMType), .WDSel(WDSel), .NPCOp(NPCOp)
-         );
-
-    // 寄存器堆：A1/A2/A3 对应 rs1/rs2/rd
     RF U_RF (
-           .clk(clk_cpu), .rstn(rstn), .RFWr(RegWrite), .sw_i(sw_i),
-           // 调试模式(sw_i[1]=1)：用开关 sw_i[10:6] 手动选择读哪个寄存器，方便在板子上查看
-           // 正常模式(sw_i[1]=0)：A1 取 rs1 = instr[19:15]
-           .A1(sw_i[1]? sw_i[10:6] : instr[19:15]),
-           .A2(instr[24:20]), .A3(instr[11:7]), .WD(WD),
-           .RD1(RD1), .RD2(RD2)
-       );
+        .clk(cpu_clk),
+        .rstn(rstn),
+        .RFWr(RegWrite),
+        .sw_i(sw_i),
+        .A1(rf_read_addr1),
+        .A2(instr[24:20]),       // rs2 地址
+        .A3(instr[11:7]),        // rd 地址
+        .WD(write_data),
+        .RD1(rs1_data),
+        .RD2(rs2_data)
+    );
 
-    // 立即数生成：把指令中的立即数字段扩展到 32 位
-    EXT U_EXT (.instr(instr[31:7]), .EXTOp(EXTOp), .immout(immout));
+    // =========================================================
+    // 7. 立即数扩展 (Immediate Extension)
+    // =========================================================
+    EXT U_EXT (
+        .instr(instr[31:7]),
+        .ext_op(ext_op),
+        .imm_out(imm_out)
+    );
 
-    // ALU 操作数选择：由控制器决定来自 PC/RD1 和 imm/RD2
-    assign alu_a = ALUSrcA ? PC : RD1;
-    assign alu_b = ALUSrcB ? immout : RD2;
+    // =========================================================
+    // 8. ALU 操作数选择 (ALU Source MUX)
+    // =========================================================
+    // ---------------------------------------------------------
+    // alu_src_a_sel | 来源 | 说明
+    // --------------|------|---------------------
+    //      0        | rs1  | 大多数指令
+    //      1        | PC   | AUIPC (PC + imm)
+    // ---------------------------------------------------------
+    // alu_src_b_sel | 来源 | 说明
+    // --------------|------|---------------------
+    //      0        | rs2  | R-Type 指令
+    //      1        | imm  | I/S/U-Type 指令
+    // ---------------------------------------------------------
+    assign alu_src_a = alu_src_a_sel ? PC : rs1_data;
+    assign alu_src_b = alu_src_b_sel ? imm_out : rs2_data;
 
-    alu U_ALU (.A(alu_a), .B(alu_b), .ALUOp(ALUOp), .C(alu_out), .Zero(Zero));
+    // =========================================================
+    // 9. ALU (算术逻辑单元)
+    // =========================================================
+    alu U_ALU (
+        .A(alu_src_a),
+        .B(alu_src_b),
+        .ALUOp(alu_op),
+        .C(alu_result),
+        .Zero(alu_zero)
+    );
 
-    // 数据存储器：地址取 alu_out 低 8 位（本工程 DM 只有 256 字节）
+    // =========================================================
+    // 10. 数据存储器 (Data Memory)
+    // =========================================================
+    // 地址取 alu_result 低 8 位 (本工程 DM 只有 256 字节)
     dm U_DM (
-           .clk(clk_cpu), .DMWr(MemWrite), .addr(alu_out[7:0]),
-           .din(RD2), .DMType(DMType), .dout(dm_out)
-       );
+        .clk(cpu_clk),
+        .DMWr(MemWrite),
+        .addr(alu_result[7:0]),
+        .din(rs2_data),
+        .DMType(mem_type),
+        .dout(mem_rd_data)
+    );
 
-    // 写回多路选择：
-    // - WDSel==2：JAL/JALR 写回 PC+4（返回地址）
-    // - WDSel==1：Load 写回 dm_out
-    // - 否则写回 ALU 结果
-    assign WD = (WDSel==2) ? PC+4 : ((WDSel==1) ? dm_out : alu_out);
+    // =========================================================
+    // 11. 写回数据选择 (Write Back MUX)
+    // =========================================================
+    // ---------------------------------------------------------
+    // wb_sel | 来源         | 适用指令
+    // -------|--------------|----------------------------------
+    //   0    | alu_result   | R-Type, I-ALU, LUI, AUIPC
+    //   1    | mem_rd_data  | Load (LB/LH/LW/LBU/LHU)
+    //   2    | PC + 4       | JAL, JALR (返回地址)
+    // ---------------------------------------------------------
+    assign write_data = (wb_sel == 2'd2) ? (PC + 32'd4) :
+                        (wb_sel == 2'd1) ? mem_rd_data : alu_result;
 
-    // 下一条 PC 计算：分支/跳转/顺序
+    // =========================================================
+    // 12. Next PC 计算 (NPC Unit)
+    // =========================================================
     NPC U_NPC (
-            .PC(PC), .Imm(immout), .rs1(RD1), .NPCOp(NPCOp),
-            .ALUZero(Zero), .ALUResult0(alu_out[0]), .BrType(instr[14:12]),
-            .next_pc(NPC_out)
-        );
+        .PC(PC),
+        .imm_offset(imm_out),
+        .rs1_data(rs1_data),
+        .npc_op(npc_op),
+        .alu_zero(alu_zero),
+        .alu_cmp(alu_result[0]),    // ALU 结果 bit0 用于 SLT/SLTU 比较
+        .branch_type(instr[14:12]),
+        .next_pc(next_pc)
+    );
 
+    // =========================================================
+    // 13. 数码管显示 (调试用)
+    // =========================================================
+    // 将 CPU 内部信号"可视化"，便于在 FPGA 板上观察
     // ---------------------------------------------------------
-    // 4) 数码管显示：把内部信号“可视化”
+    // sw_i[1]    = 1: 调试模式，显示寄存器值
+    // sw_i[14]   = 1: 显示当前指令
+    // sw_i[13]   = 1: 显示 ALU 结果
+    // sw_i[12]   = 1: 显示 PC 值
+    // 其他情况      : 显示写回数据
     // ---------------------------------------------------------
-    // display_data 是 64-bit，这里用 seg7x16 的“字符模式”显示低 32-bit 的 8 个十六进制数字
     reg [63:0] display_data;
+
     always @(*) begin
         if (sw_i[1])
-            display_data = {4'hD, 3'b0, sw_i[10:6], 8'b0, RD1[23:0]}; // 调试查RF
+            // 调试模式: 显示 "D" + 寄存器编号 + 寄存器值
+            display_data = {4'hD, 3'b0, sw_i[10:6], 8'b0, rs1_data[23:0]};
         else if (sw_i[14])
             display_data = {32'b0, instr};
         else if (sw_i[13])
-            display_data = {32'b0, alu_out};
+            display_data = {32'b0, alu_result};
         else if (sw_i[12])
             display_data = {32'b0, 24'b0, PC[7:0]};
         else
-            display_data = {32'b0, WD};
+            display_data = {32'b0, write_data};
     end
 
-    seg7x16 u_seg (.clk(clk), .rstn(rstn), .disp_mode(1'b0), .i_data(display_data), .o_seg(disp_seg_o), .o_sel(disp_an_o));
+    seg7x16 U_SEG7 (
+        .clk(clk),
+        .rstn(rstn),
+        .disp_mode(1'b0),
+        .i_data(display_data),
+        .o_seg(disp_seg_o),
+        .o_sel(disp_an_o)
+    );
 
-    // LED输出(可用于调试)
+    // =========================================================
+    // 14. LED 输出 (调试用)
+    // =========================================================
+    // 直接将开关值映射到 LED，方便确认开关状态
     assign led_o = sw_i;
 
 endmodule
