@@ -1,45 +1,56 @@
 `timescale 1ns / 1ps
-//////////////////////////////////////////////////////////////////////////////////
-// Module Name: RF (Register File)
-// Description: 32x32-bit Register File for RISC-V
-//              r[0] is hardwired to 0.
-//////////////////////////////////////////////////////////////////////////////////
 
+// =============================================================
+// RF：寄存器堆 (Register File) —— RV32I 32 个通用寄存器 x0~x31
+// -------------------------------------------------------------
+// 接口说明：
+// - A1/A2：读地址（rs1/rs2）
+// - RD1/RD2：读数据（组合读：地址变化会立刻反映到输出）
+// - A3：写地址（rd）
+// - WD：写数据
+// - RFWr：写使能（为 1 时在时钟上升沿写入）
+//
+// RISC-V 约定：x0 永远为 0
+// - 所以读 x0 时直接输出 0
+// - 写 x0 时必须忽略（这里用 A3!=0 做保护）
+//
+// 初学者提示：
+// - “组合读 + 同步写”是寄存器堆最常见的实现方式
+// - always @(posedge clk ...) 里用非阻塞赋值 <=，表示寄存器在时钟沿更新
+// - for 循环的初始化通常用于仿真/复位；综合到 FPGA 时具体效果与工具/目标器件有关
+// =============================================================
 module RF (
-    input         clk,          // 时钟信号
-    input         rstn,         // 复位信号 (低电平有效)
-    input         RFWr,         // 写使能信号 (1: Write, 0: Read only)
-    input  [15:0] sw_i,         // 拨码开关输入 (sw_i[1]用于写保护)
-    input  [4:0]  A1,           // 读端口 1 地址 (Read Register 1)
-    input  [4:0]  A2,           // 读端口 2 地址 (Read Register 2)
-    input  [4:0]  A3,           // 写端口 地址 (Write Register)
-    input  [31:0] WD,           // 写数据 (Write Data)
-    output [31:0] RD1,          // 读数据 1 (Read Data 1)
-    output [31:0] RD2           // 读数据 2 (Read Data 2)
-);
-
-    reg [31:0] rf [31:0];
+        input clk, rstn, RFWr,
+        input [15:0] sw_i,      // 开关输入：本工程用 sw_i[1] 做“调试模式”开关
+        input [4:0] A1, A2, A3,
+        input [31:0] WD,
+        output [31:0] RD1, RD2
+    );
+    reg [31:0] rf[31:0];
     integer i;
 
-    // 1. 读逻辑 (组合逻辑)
-    // 寄存器 0 永远为 0
-    assign RD1 = (A1 == 5'b0) ? 32'b0 : rf[A1];
-    assign RD2 = (A2 == 5'b0) ? 32'b0 : rf[A2];
+    // 异步读（组合逻辑）：A1/A2 一变，RD1/RD2 立刻变化
+    assign RD1 = (A1==0) ? 0 : rf[A1];
+    assign RD2 = (A2==0) ? 0 : rf[A2];
 
-    // 2. 写逻辑 & 初始化 (时序逻辑)
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            // 复位时初始化寄存器，rf[i] = i，方便测试
             for (i = 0; i < 32; i = i + 1) begin
-                rf[i] <= i;
+                // RF.v 初始化部分
+                if (i == 1)
+                    rf[i] <= 32'd84; // x1 (ra) 返回地址，不用动
+                else if (i == 2)
+                    rf[i] <= 32'd250; // <--- 修改这里：x2 (sp) 设为 250 (接近内存顶端)
+                else if (i == 10)
+                    rf[i] <= 32'd10;// <--- 现在内存够大了，敢算 Fib(10) 了！
+                else
+                    rf[i] <= i;       // 其他寄存器还是初始化为 i (保证 x10=10)
             end
         end
-        else begin
-            // 写操作：使能有效，且 sw_i[1] (调试模式) 为 0，且目标不是 x0
-            if (RFWr && (sw_i[1] == 1'b0) && (A3 != 5'b0)) begin
-                rf[A3] <= WD;
-            end
+        // 同步写：只有在时钟上升沿写入
+        // 只有非调试模式(sw[1]=0)才允许写入，便于你在板子上“暂停 CPU”观察寄存器
+        else if (RFWr && (A3!=0) && (sw_i[1]==0)) begin
+            rf[A3] <= WD;
         end
     end
-
 endmodule

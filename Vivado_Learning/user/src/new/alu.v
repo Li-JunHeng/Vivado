@@ -1,39 +1,79 @@
 `timescale 1ns / 1ps
-//////////////////////////////////////////////////////////////////////////////////
-// Module Name: ALU (Arithmetic Logic Unit)
-// Description: 32-bit ALU for RISC-V
-//              Supports basic arithmetic and logic operations
-//              Compatible with RF (Register File) module
-//////////////////////////////////////////////////////////////////////////////////
 
-module ALU (
-    input  [31:0] A,        // 操作数 A (Operand A)
-    input  [31:0] B,        // 操作数 B (Operand B)
-    input  [2:0]  ALUOp,    // ALU 操作码 (ALU Operation Code)
-    output [31:0] C,        // 运算结果 (Result)
-    output        Zero      // 零标志位 (Zero Flag: 1 if C==0, else 0)
-);
-
-    reg [31:0] alu_result;
-
-    // ALU 运算逻辑 (组合逻辑)
+// =============================================================
+// ALU：算术逻辑单元 (Arithmetic Logic Unit)
+// -------------------------------------------------------------
+// 作用：根据 ALUOp 对两个 32 位操作数 A/B 做运算，输出结果 C。
+// 额外输出：Zero = (C==0)，通常用于分支指令判断（例如 BEQ / BNE）。
+//
+// 初学者提示：
+// - 本模块是“组合逻辑”：使用 always @(*)，输入变了输出就更新。
+// - 组合逻辑里通常用阻塞赋值“=”，写起来更像“按步骤算结果”。
+// - A/B 声明为 signed，便于实现 SLT / SRA 等带符号运算。
+// - 移位量只看低 5 位(B[4:0])，因为 32 位数据移位最多 0~31 位。
+//
+// ALUOp 编码（需要与 ctrl.v 保持一致）：
+//   0:ADD  1:SUB  2:SLL  3:SLT   4:SLTU
+//   5:XOR  6:SRL  7:SRA  8:OR    9:AND  10:LUI
+//   11/12：预留给“DIY 指令/功能”扩展（见下面 case）
+// =============================================================
+module alu(
+        input signed [31:0] A, B,
+        input        [4:0]  ALUOp,
+        output reg   [31:0] C,
+        output              Zero
+    );
     always @(*) begin
-        case (ALUOp)
-            3'b000: alu_result = A + B;         // 加法 (ADD)
-            3'b001: alu_result = A - B;         // 减法 (SUB)
-            3'b010: alu_result = A & B;         // 按位与 (AND)
-            3'b011: alu_result = A | B;         // 按位或 (OR)
-            3'b100: alu_result = A ^ B;         // 按位异或 (XOR)
-            3'b101: alu_result = (A < B) ? 32'd1 : 32'd0;  // 小于比较 (SLT - Set Less Than)
-            3'b110: alu_result = A << B[4:0];   // 逻辑左移 (SLL - Shift Left Logical)
-            3'b111: alu_result = A >> B[4:0];   // 逻辑右移 (SRL - Shift Right Logical)
-            default: alu_result = 32'd0;        // 默认输出 0
+        case(ALUOp)
+            5'd0:
+                C = A + B;        // ADD：加法（地址计算/算术）
+            5'd1:
+                C = A - B;        // SUB：减法（BEQ/BNE 也常用它做比较）
+            5'd2:
+                C = A << B[4:0];  // SLL：逻辑左移
+            5'd3:
+                C = (A < B) ? 1 : 0; // SLT：有符号比较 A<B
+            5'd4:
+                C = ($unsigned(A) < $unsigned(B)) ? 1 : 0; // SLTU：无符号比较 A<B
+            5'd5:
+                C = A ^ B;        // XOR：按位异或
+            5'd6:
+                C = A >> B[4:0];  // SRL：逻辑右移（高位补 0）
+            5'd7:
+                C = A >>> B[4:0]; // SRA：算术右移（复制符号位）
+            5'd8:
+                C = A | B;        // OR：按位或
+            5'd9:
+                C = A & B;        // AND：按位与
+            5'd10:
+                C = B;           // LUI：Load Upper Immediate（这里直接把扩展后的立即数送出）
+
+            // =================================================
+            // 【DIY 预留区 1】自定义“计算类”运算（ALUOp=11）
+            // =================================================
+            5'd11: begin
+                // 你可以在这里实现自定义运算，例如：MIN / MAX / ABS ... 等
+                //
+                // 示例：MIN（返回 A、B 中较小的那个，按有符号数比较）
+                C = ($signed(A) < $signed(B)) ? A : B;
+            end
+
+            // =================================================
+            // 【DIY 预留区 2】自定义“分支辅助”逻辑（ALUOp=12）
+            // =================================================
+            5'd12: begin
+                // 分支类指令往往需要“比较结果”。为了省硬件，常复用 ALU 来输出比较用的 0/1。
+                //
+                // 示例 1：为 BGT（大于跳转）准备：先算 A<B 的标志（1 表示 A<B）
+                C = (A < B) ? 1 : 0;
+                //
+                // 示例 2：为 BODD（奇数跳转）准备：可令 C = A & 1，然后在 NPC 里判断结果是否为 0
+                // C = A & 32'h1;
+            end
+
+            default:
+                C = 0;
         endcase
     end
-
-    // 输出赋值
-    assign C = alu_result;
-    assign Zero = (alu_result == 32'd0) ? 1'b1 : 1'b0;
-
+    assign Zero = (C == 0);
 endmodule
-

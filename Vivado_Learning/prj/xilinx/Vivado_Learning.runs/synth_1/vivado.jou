@@ -1,24 +1,12 @@
 #-----------------------------------------------------------
-# Vivado v2025.1 (64-bit)
-# SW Build 6140274 on Thu May 22 00:12:29 MDT 2025
-# IP Build 6138677 on Thu May 22 03:10:11 MDT 2025
-# SharedData Build 6139179 on Tue May 20 17:58:58 MDT 2025
-# Start of session at: Sat Sep 27 18:36:34 2025
-# Process ID         : 42100
-# Current directory  : D:/Vivado/Vivado_Learning/Vivado_Learning.runs/synth_1
-# Command line       : vivado.exe -log course_1.vds -product Vivado -mode batch -messageDb vivado.pb -notrace -source course_1.tcl
-# Log file           : D:/Vivado/Vivado_Learning/Vivado_Learning.runs/synth_1/course_1.vds
-# Journal file       : D:/Vivado/Vivado_Learning/Vivado_Learning.runs/synth_1\vivado.jou
-# Running On         : LengYue
-# Platform           : Windows Server 2016 or Windows 10
-# Operating System   : 26100
-# Processor Detail   : Intel(R) Core(TM) i9-14900KF
-# CPU Frequency      : 3187 MHz
-# CPU Physical cores : 24
-# CPU Logical cores  : 32
-# Host memory        : 68523 MB
-# Swap memory        : 4294 MB
-# Total Virtual      : 72818 MB
-# Available Virtual  : 35180 MB
+# Vivado v2018.3 (64-bit)
+# SW Build 2405991 on Thu Dec  6 23:38:27 MST 2018
+# IP Build 2404404 on Fri Dec  7 01:43:56 MST 2018
+# Start of session at: Fri Dec  5 20:20:04 2025
+# Process ID: 11044
+# Current directory: e:/vivado/Vivado_Learning/prj/xilinx/Vivado_Learning.runs/synth_1
+# Command line: vivado.exe -log computer.vds -product Vivado -mode batch -messageDb vivado.pb -notrace -source computer.tcl
+# Log file: e:/vivado/Vivado_Learning/prj/xilinx/Vivado_Learning.runs/synth_1/computer.vds
+# Journal file: e:/vivado/Vivado_Learning/prj/xilinx/Vivado_Learning.runs/synth_1\vivado.jou
 #-----------------------------------------------------------
-source course_1.tcl -notrace
+source computer.tcl -notrace
